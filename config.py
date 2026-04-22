@@ -1,0 +1,6 @@
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "MISSING_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+
+PORT = int(os.getenv("PORT", 10000))
