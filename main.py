@@ -1,19 +1,9 @@
 import logging
-import sys
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 from config import BOT_TOKEN, WEBHOOK_URL, PORT
-from downloader import get_formats, download_video
-from utils import safe_remove
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,87 +11,60 @@ app = FastAPI()
 
 user_data = {}
 
-# ---------------- BOT INIT ----------------
-if BOT_TOKEN == "MISSING_TOKEN":
-    print("❌ BOT_TOKEN missing! Bot will not start webhook mode.")
-    USE_WEBHOOK = False
+# ---------------- SAFE CHECK ----------------
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN missing - bot disabled")
+    bot_app = None
 else:
-    USE_WEBHOOK = True
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-bot = ApplicationBuilder().token(BOT_TOKEN if USE_WEBHOOK else "0:dummy").build()
-
-# ---------------- START ----------------
+# ---------------- COMMAND ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send video link 🎬")
+    await update.message.reply_text("Send me a video link 🎬")
 
-# ---------------- MESSAGE ----------------
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    chat_id = update.message.chat_id
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data[update.message.chat_id] = update.message.text
+    await update.message.reply_text("Received link ✔️")
 
-    user_data[chat_id] = url
+# ---------------- REGISTER ----------------
+if bot_app:
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    formats = get_formats(url)
-
-    buttons = [
-        [InlineKeyboardButton(f["q"], callback_data=f"v|{f['id']}")]
-        for f in formats
-    ]
-
-    await update.message.reply_text(
-        "Choose quality:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-# ---------------- BUTTON ----------------
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    chat_id = query.message.chat_id
-    url = user_data.get(chat_id)
-
-    await query.edit_message_text("Downloading... ⏬")
-
-    try:
-        format_id = query.data.split("|")[1]
-        file_path = download_video(url, format_id)
-
-        await context.bot.send_document(chat_id, open(file_path, "rb"))
-        safe_remove(file_path)
-
-    except Exception as e:
-        await context.bot.send_message(chat_id, f"Error: {e}")
-
-# ---------------- ROUTES ----------------
-bot.add_handler(CommandHandler("start", start))
-bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-bot.add_handler(CallbackQueryHandler(button))
-
+# ---------------- WEBHOOK ----------------
 @app.post("/webhook")
 async def webhook(req: Request):
+    if not bot_app:
+        return {"error": "bot not running"}
+
     data = await req.json()
-    update = Update.de_json(data, bot.bot)
-    await bot.process_update(update)
+    update = Update.de_json(data, bot_app.bot)
+    await bot_app.process_update(update)
     return {"ok": True}
 
+# ---------------- HOME ----------------
 @app.get("/")
 async def home():
     return {
-        "status": "V9 running",
-        "webhook_mode": USE_WEBHOOK
+        "status": "V9 STABLE RUNNING",
+        "webhook": bool(WEBHOOK_URL)
     }
 
 # ---------------- STARTUP SAFE ----------------
 @app.on_event("startup")
 async def startup():
-    await bot.initialize()
+    try:
+        if bot_app:
+            await bot_app.initialize()
 
-    if USE_WEBHOOK and WEBHOOK_URL:
-        await bot.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-        print("✅ Webhook enabled")
-    else:
-        print("⚠️ Running without webhook (safe mode)")
+            if WEBHOOK_URL:
+                await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+                print("✅ Webhook enabled")
+            else:
+                print("⚠️ No WEBHOOK_URL - running without webhook")
+
+    except Exception as e:
+        print("❌ Startup error:", e)
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
